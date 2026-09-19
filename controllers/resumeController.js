@@ -103,18 +103,39 @@ async function embedText(text, taskType = "RETRIEVAL_DOCUMENT") {
 
 async function semanticRetrieve(jobDescription, candidates) {
   const queryEmbedding = await embedText(jobDescription, "RETRIEVAL_QUERY");
-  const ranked = [];
+
+  // Stage 1: semantic candidate retrieval over the Top-100 keyword candidates.
+  const candidateRanks = [];
   for (const candidate of candidates) {
-    const chunks = chunkText(candidate.extractedText || "");
-    if (!chunks.length) continue;
+    const embedding = await embedText(candidate.extractedText || "", "RETRIEVAL_DOCUMENT");
+    candidateRanks.push({
+      candidate,
+      semanticScore: cosineSimilarity(queryEmbedding, embedding)
+    });
+  }
+
+  candidateRanks.sort((a, b) => b.semanticScore - a.semanticScore);
+  const semanticTop20 = candidateRanks.slice(0, 20);
+  const ranked = [];
+
+  // Stage 2: RAG context retrieval only for the Top-20 candidates.
+  for (const item of semanticTop20) {
+    const chunks = chunkText(item.candidate.extractedText || "", 1000, 150).slice(0, 4);
     const chunkScores = [];
+
     for (const chunk of chunks) {
       const embedding = await embedText(chunk, "RETRIEVAL_DOCUMENT");
       chunkScores.push({ chunk, score: cosineSimilarity(queryEmbedding, embedding) });
     }
+
     chunkScores.sort((a, b) => b.score - a.score);
-    ranked.push({ candidate, semanticScore: Math.round((chunkScores[0]?.score || 0) * 100), ragContext: chunkScores.slice(0, 3).map(x => x.chunk) });
+    ranked.push({
+      candidate: item.candidate,
+      semanticScore: Math.round(item.semanticScore * 100),
+      ragContext: chunkScores.slice(0, 3).map(x => x.chunk)
+    });
   }
+
   return ranked.sort((a, b) => b.semanticScore - a.semanticScore);
 }
 
